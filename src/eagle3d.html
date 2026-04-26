@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Eagle - WebGL Assignment</title>
+<style>
+  body { background-color: #222; color: white; font-family: Arial, sans-serif; }
+  canvas { display: block; margin: 0 auto; background: #111; }
+  #perf { position: absolute; top: 8px; right: 16px; color: lime; font-size: 14px; background: rgba(0,0,0,0.5); padding: 4px 8px; }
+  #controls { text-align: center; margin: 10px; }
+  label { margin: 0 8px; font-size: 13px; }
+</style>
+</head>
+<body>
+<p style="text-align:center; margin:8px 0;">drag to rotate &nbsp;|&nbsp; shift+click to screech</p>
+<div style="position:relative; display:inline-block; left:50%; transform:translateX(-50%);">
+  <canvas id="c" width="800" height="500"></canvas>
+  <div id="perf">-- fps</div>
+</div>
+
+<div id="controls">
+  <br>
+  Global Rotation X: <input type="range" id="rotX" min="-180" max="180" value="-10">
+  Global Rotation Y: <input type="range" id="rotY" min="-180" max="180" value="20">
+  <br><br>
+
+  Left Wing Upper: <input type="range" id="lwUpper" min="-80" max="80" value="0">
+  Left Wing Lower: <input type="range" id="lwLower" min="-60" max="60" value="0">
+  Left Wing Tip: <input type="range" id="lwTip" min="-60" max="60" value="0">
+  <br>
+  Right Wing Upper: <input type="range" id="rwUpper" min="-80" max="80" value="0">
+  Right Wing Lower: <input type="range" id="rwLower" min="-60" max="60" value="0">
+  Right Wing Tip: <input type="range" id="rwTip" min="-60" max="60" value="0">
+  <br><br>
+
+  Left Leg Upper: <input type="range" id="llUpper" min="-50" max="50" value="0">
+  Left Leg Lower: <input type="range" id="llLower" min="-70" max="10" value="-15">
+  Right Leg Upper: <input type="range" id="rlUpper" min="-50" max="50" value="0">
+  Right Leg Lower: <input type="range" id="rlLower" min="-70" max="10" value="-15">
+  <br><br>
+
+  Tail: <input type="range" id="tail" min="-40" max="40" value="0">
+  Head Nod: <input type="range" id="headNod" min="-30" max="30" value="0">
+  <br><br>
+
+  <button id="btnAnim">Start Animation</button>
+  <button id="btnPoke">Screech!</button>
+</div>
+
+<script>
+var VERT_SRC = `
+attribute vec4 a_Position;
+attribute vec3 a_Normal;
+uniform mat4 u_GlobalRotation;
+uniform mat4 u_ModelMatrix;
+varying vec3 v_Normal;
+void main() {
+  gl_Position = u_GlobalRotation * u_ModelMatrix * a_Position;
+  v_Normal = mat3(u_ModelMatrix) * a_Normal;
+}`;
+
+var FRAG_SRC = `
+precision mediump float;
+uniform vec4 u_Color;
+varying vec3 v_Normal;
+void main() {
+  vec3 lightDir = normalize(vec3(1.0, 1.0, 1.0));
+  float diff = max(dot(normalize(v_Normal), lightDir), 0.0);
+  float light = 0.4 + 0.6 * diff;
+  gl_FragColor = vec4(u_Color.rgb * light, u_Color.a);
+}`;
+
+class Matrix4 {
+  constructor(src) {
+    this.elements = src ? new Float32Array(src.elements) : new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  }
+  multiply(m) {
+    var a=this.elements, b=m.elements, r=new Float32Array(16);
+    for(var i=0;i<4;i++) for(var j=0;j<4;j++) {
+      var s=0; for(var k=0;k<4;k++) s+=a[i+k*4]*b[k+j*4]; r[i+j*4]=s;
+    }
+    this.elements=r; return this;
+  }
+  translate(x,y,z) {
+    var t=new Matrix4(); t.elements[12]=x; t.elements[13]=y; t.elements[14]=z;
+    return this.multiply(t);
+  }
+  rotate(deg,ax,ay,az) {
+    var r=deg*Math.PI/180, c=Math.cos(r), s=Math.sin(r);
+    var l=Math.sqrt(ax*ax+ay*ay+az*az); ax/=l; ay/=l; az/=l;
+    var m=new Matrix4(), e=m.elements;
+    e[0]=ax*ax*(1-c)+c;    e[4]=ax*ay*(1-c)-az*s; e[8]=ax*az*(1-c)+ay*s;
+    e[1]=ay*ax*(1-c)+az*s; e[5]=ay*ay*(1-c)+c;    e[9]=ay*az*(1-c)-ax*s;
+    e[2]=az*ax*(1-c)-ay*s; e[6]=az*ay*(1-c)+ax*s; e[10]=az*az*(1-c)+c;
+    return this.multiply(m);
+  }
+  scale(x,y,z) {
+    var s=new Matrix4(); s.elements[0]=x; s.elements[5]=y; s.elements[10]=z;
+    return this.multiply(s);
+  }
+  setPerspective(fovy,aspect,near,far) {
+    var f=1.0/Math.tan(fovy*Math.PI/360), e=this.elements;
+    e[0]=f/aspect; e[1]=0; e[2]=0; e[3]=0;
+    e[4]=0; e[5]=f; e[6]=0; e[7]=0;
+    e[8]=0; e[9]=0; e[10]=(near+far)/(near-far); e[11]=-1;
+    e[12]=0; e[13]=0; e[14]=(2*near*far)/(near-far); e[15]=0;
+    return this;
+  }
+}
+
+var canvas = document.getElementById('c');
+var gl = canvas.getContext('webgl');
+gl.enable(gl.DEPTH_TEST);
+
+function makeShader(type, src) {
+  var s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  return s;
+}
+var prog = gl.createProgram();
+gl.attachShader(prog, makeShader(gl.VERTEX_SHADER, VERT_SRC));
+gl.attachShader(prog, makeShader(gl.FRAGMENT_SHADER, FRAG_SRC));
+gl.linkProgram(prog); gl.useProgram(prog);
+
+var a_Pos  = gl.getAttribLocation(prog, 'a_Position');
+var a_Norm = gl.getAttribLocation(prog, 'a_Normal');
+var u_Global = gl.getUniformLocation(prog, 'u_GlobalRotation');
+var u_Model  = gl.getUniformLocation(prog, 'u_ModelMatrix');
+var u_Color  = gl.getUniformLocation(prog, 'u_Color');
+
+var CUBE_VERTS = new Float32Array([
+  -0.5,-0.5, 0.5, 0,0,1,  0.5,-0.5, 0.5, 0,0,1,  0.5, 0.5, 0.5, 0,0,1,
+  -0.5,-0.5, 0.5, 0,0,1,  0.5, 0.5, 0.5, 0,0,1, -0.5, 0.5, 0.5, 0,0,1,
+   0.5,-0.5,-0.5, 0,0,-1,-0.5,-0.5,-0.5, 0,0,-1,-0.5, 0.5,-0.5, 0,0,-1,
+   0.5,-0.5,-0.5, 0,0,-1,-0.5, 0.5,-0.5, 0,0,-1, 0.5, 0.5,-0.5, 0,0,-1,
+   0.5,-0.5,-0.5, 1,0,0,  0.5,-0.5, 0.5, 1,0,0,  0.5, 0.5, 0.5, 1,0,0,
+   0.5,-0.5,-0.5, 1,0,0,  0.5, 0.5, 0.5, 1,0,0,  0.5, 0.5,-0.5, 1,0,0,
+  -0.5,-0.5, 0.5,-1,0,0, -0.5,-0.5,-0.5,-1,0,0, -0.5, 0.5,-0.5,-1,0,0,
+  -0.5,-0.5, 0.5,-1,0,0, -0.5, 0.5,-0.5,-1,0,0, -0.5, 0.5, 0.5,-1,0,0,
+  -0.5, 0.5, 0.5, 0,1,0,  0.5, 0.5, 0.5, 0,1,0,  0.5, 0.5,-0.5, 0,1,0,
+  -0.5, 0.5, 0.5, 0,1,0,  0.5, 0.5,-0.5, 0,1,0, -0.5, 0.5,-0.5, 0,1,0,
+  -0.5,-0.5,-0.5, 0,-1,0, 0.5,-0.5,-0.5, 0,-1,0, 0.5,-0.5, 0.5, 0,-1,0,
+  -0.5,-0.5,-0.5, 0,-1,0, 0.5,-0.5, 0.5, 0,-1,0,-0.5,-0.5, 0.5, 0,-1,0,
+]);
+var cubeVBO = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, cubeVBO);
+gl.bufferData(gl.ARRAY_BUFFER, CUBE_VERTS, gl.STATIC_DRAW);
+
+function buildCylinder(segs) {
+  var verts = [];
+  for(var i=0; i<segs; i++) {
+    var a0=i/segs*Math.PI*2, a1=(i+1)/segs*Math.PI*2;
+    var x0=Math.cos(a0), z0=Math.sin(a0), x1=Math.cos(a1), z1=Math.sin(a1);
+    verts.push(x0,-0.5,z0,x0,0,z0, x1,-0.5,z1,x1,0,z1, x1,0.5,z1,x1,0,z1);
+    verts.push(x0,-0.5,z0,x0,0,z0, x1,0.5,z1,x1,0,z1,  x0,0.5,z0,x0,0,z0);
+    verts.push(0,0.5,0,0,1,0, x0,0.5,z0,0,1,0, x1,0.5,z1,0,1,0);
+    verts.push(0,-0.5,0,0,-1,0, x1,-0.5,z1,0,-1,0, x0,-0.5,z0,0,-1,0);
+  }
+  return new Float32Array(verts);
+}
+var cylData = buildCylinder(14);
+var cylVBO = gl.createBuffer();
+var cylCount = cylData.length / 6;
+gl.bindBuffer(gl.ARRAY_BUFFER, cylVBO);
+gl.bufferData(gl.ARRAY_BUFFER, cylData, gl.STATIC_DRAW);
+
+function bindCube() {
+  gl.bindBuffer(gl.ARRAY_BUFFER, cubeVBO);
+  gl.vertexAttribPointer(a_Pos,3,gl.FLOAT,false,24,0);
+  gl.enableVertexAttribArray(a_Pos);
+  gl.vertexAttribPointer(a_Norm,3,gl.FLOAT,false,24,12);
+  gl.enableVertexAttribArray(a_Norm);
+}
+function bindCyl() {
+  gl.bindBuffer(gl.ARRAY_BUFFER, cylVBO);
+  gl.vertexAttribPointer(a_Pos,3,gl.FLOAT,false,24,0);
+  gl.enableVertexAttribArray(a_Pos);
+  gl.vertexAttribPointer(a_Norm,3,gl.FLOAT,false,24,12);
+  gl.enableVertexAttribArray(a_Norm);
+}
+
+function drawCube(M, color) {
+  gl.uniform4fv(u_Color, color);
+  gl.uniformMatrix4fv(u_Model, false, M.elements);
+  bindCube();
+  gl.drawArrays(gl.TRIANGLES, 0, 36);
+}
+function drawCyl(M, color) {
+  gl.uniform4fv(u_Color, color);
+  gl.uniformMatrix4fv(u_Model, false, M.elements);
+  bindCyl();
+  gl.drawArrays(gl.TRIANGLES, 0, cylCount);
+}
+
+var brown  = [0.25, 0.15, 0.05, 1];
+var dkBrown= [0.18, 0.10, 0.03, 1];
+var white  = [0.92, 0.90, 0.85, 1];
+var yellow = [0.85, 0.65, 0.10, 1];
+var black  = [0.08, 0.08, 0.08, 1];
+var ltBrown= [0.45, 0.28, 0.10, 1];
+
+var gRotX=-10, gRotY=20;
+var gLWUpper=0, gLWLower=0, gLWTip=0;
+var gRWUpper=0, gRWLower=0, gRWTip=0;
+var gLLUpper=0, gLLLower=-15;
+var gRLUpper=0, gRLLower=-15;
+var gTail=0, gHeadNod=0;
+
+var gAnimOn=false, gPokeOn=false;
+var gTime=0, gPokeTime=0;
+var gLastTime=performance.now(), gFrameCount=0, gFPSTimer=0;
+var gDirty=true;
+
+var mouseDown=false, lastMX=0, lastMY=0;
+
+var proj = new Matrix4().setPerspective(45, canvas.width/canvas.height, 0.1, 100);
+
+function renderScene() {
+  gl.clearColor(0.1, 0.1, 0.15, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+  var G = new Matrix4();
+  G.multiply(proj);
+  G.translate(0, 0, -3.5);
+  G.rotate(gRotX, 1,0,0);
+  G.rotate(gRotY, 0,1,0);
+  gl.uniformMatrix4fv(u_Global, false, G.elements);
+
+  var M;
+
+  // body
+  M = new Matrix4();
+  M.scale(0.75, 0.40, 0.45);
+  drawCube(M, brown);
+
+  // white tail feathers base
+  M = new Matrix4();
+  M.translate(-0.45, 0.0, 0);
+  M.rotate(gTail, 0,0,1);
+  var tailBase = new Matrix4(M);
+
+  M = new Matrix4(tailBase);
+  M.translate(-0.15, 0, 0);
+  M.scale(0.30, 0.12, 0.38);
+  drawCube(M, white);
+
+  // tail tip (second joint)
+  var tailTip = new Matrix4(tailBase);
+  tailTip.translate(-0.30, 0, 0);
+  tailTip.rotate(gTail * 0.5, 0,0,1);
+
+  M = new Matrix4(tailTip);
+  M.translate(-0.12, 0, 0);
+  M.scale(0.22, 0.07, 0.34);
+  drawCube(M, white);
+
+  // neck
+  M = new Matrix4();
+  M.translate(0.38, 0.15, 0);
+  M.rotate(-15, 0,0,1);
+  M.scale(0.16, 0.26, 0.18);
+  drawCube(M, white);
+
+  // head base (white - bald eagle head)
+  var headBase = new Matrix4();
+  headBase.translate(0.44, 0.37, 0);
+  headBase.rotate(gHeadNod, 0,0,1);
+
+  M = new Matrix4(headBase);
+  M.scale(0.28, 0.26, 0.26);
+  drawCube(M, white);
+
+  // beak upper - yellow, cylinder rotated (non-cube primitive)
+  M = new Matrix4(headBase);
+  M.translate(0.20, 0.01, 0);
+  M.rotate(90, 0,1,0);
+  M.scale(0.06, 0.05, 0.16);
+  drawCyl(M, yellow);
+
+  // beak lower
+  M = new Matrix4(headBase);
+  M.translate(0.18, -0.04, 0);
+  M.scale(0.10, 0.04, 0.06);
+  drawCube(M, yellow);
+
+  // eye L
+  M = new Matrix4(headBase);
+  M.translate(0.10, 0.06, 0.13);
+  M.scale(0.05, 0.05, 0.03);
+  drawCube(M, black);
+
+  // eye R
+  M = new Matrix4(headBase);
+  M.translate(0.10, 0.06, -0.13);
+  M.scale(0.05, 0.05, 0.03);
+  drawCube(M, black);
+
+  // left wing
+  function drawWing(zSide, upper, lower, tip) {
+    var shoulder = new Matrix4();
+    shoulder.translate(0.05, 0.08, zSide * 0.22);
+    shoulder.rotate(upper, 1,0,0);
+
+    M = new Matrix4(shoulder);
+    M.translate(0, 0, zSide * 0.18);
+    M.scale(0.50, 0.10, 0.36);
+    drawCube(M, brown);
+
+    var elbow = new Matrix4(shoulder);
+    elbow.translate(0, 0, zSide * 0.38);
+    elbow.rotate(lower, 1,0,0);
+
+    M = new Matrix4(elbow);
+    M.translate(0, 0, zSide * 0.18);
+    M.scale(0.38, 0.07, 0.35);
+    drawCube(M, dkBrown);
+
+    var wrist = new Matrix4(elbow);
+    wrist.translate(0, 0, zSide * 0.37);
+    wrist.rotate(tip, 1,0,0);
+
+    M = new Matrix4(wrist);
+    M.translate(0, 0, zSide * 0.14);
+    M.scale(0.28, 0.05, 0.28);
+    drawCube(M, black);
+  }
+
+  drawWing( 1, gLWUpper, gLWLower, gLWTip);
+  drawWing(-1, gRWUpper, gRWLower, gRWTip);
+
+  // legs
+  function drawLeg(zOff, upper, lower) {
+    var hip = new Matrix4();
+    hip.translate(0.10, -0.22, zOff);
+    hip.rotate(upper, 0,0,1);
+
+    M = new Matrix4(hip);
+    M.translate(0, -0.10, 0);
+    M.scale(0.09, 0.20, 0.09);
+    drawCube(M, yellow);
+
+    var knee = new Matrix4(hip);
+    knee.translate(0, -0.20, 0);
+    knee.rotate(lower, 0,0,1);
+
+    M = new Matrix4(knee);
+    M.translate(0, -0.09, 0);
+    M.scale(0.07, 0.18, 0.07);
+    drawCube(M, yellow);
+
+    // talon
+    var ankle = new Matrix4(knee);
+    ankle.translate(0, -0.18, 0);
+
+    M = new Matrix4(ankle);
+    M.translate(0.06, -0.02, 0);
+    M.scale(0.18, 0.04, 0.05);
+    drawCube(M, black);
+    M = new Matrix4(ankle);
+    M.translate(0.06, -0.02, 0.04);
+    M.scale(0.14, 0.03, 0.03);
+    drawCube(M, black);
+    M = new Matrix4(ankle);
+    M.translate(0.06, -0.02, -0.04);
+    M.scale(0.14, 0.03, 0.03);
+    drawCube(M, black);
+  }
+
+  drawLeg( 0.14, gLLUpper, gLLLower);
+  drawLeg(-0.14, gRLUpper, gRLLower);
+}
+
+function updateAnimationAngles(t) {
+  var sp = t * 0.0018;
+  var flap = Math.sin(sp);
+  var fast = Math.sin(sp * 2);
+
+  gLWUpper = flap * 45;
+  gRWUpper = -flap * 45;
+  gLWLower = fast * 20;
+  gRWLower = -fast * 20;
+  gLWTip = fast * 15;
+  gRWTip = -fast * 15;
+
+  gHeadNod = Math.sin(sp * 0.6) * 8;
+  gTail = Math.sin(sp * 1.2) * 12;
+
+  gLLUpper = Math.sin(sp * 1.5) * 10;
+  gRLUpper = -Math.sin(sp * 1.5) * 10;
+}
+
+function updatePokeAngles(elapsed) {
+  var p = Math.min(elapsed / 1000, 1);
+  var b = Math.sin(p * Math.PI * 4) * (1 - p);
+
+  gLWUpper = 70 * b;
+  gRWUpper = -70 * b;
+  gLWLower = 40 * b;
+  gRWLower = -40 * b;
+  gHeadNod = -25 * b;
+  gTail = 30 * b;
+}
+
+function syncSliders() {
+  document.getElementById('lwUpper').value = gLWUpper;
+  document.getElementById('lwLower').value = gLWLower;
+  document.getElementById('lwTip').value   = gLWTip;
+  document.getElementById('rwUpper').value = gRWUpper;
+  document.getElementById('rwLower').value = gRWLower;
+  document.getElementById('rwTip').value   = gRWTip;
+  document.getElementById('llUpper').value = gLLUpper;
+  document.getElementById('llLower').value = gLLLower;
+  document.getElementById('rlUpper').value = gRLUpper;
+  document.getElementById('rlLower').value = gRLLower;
+  document.getElementById('tail').value    = gTail;
+  document.getElementById('headNod').value = gHeadNod;
+}
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  var dt = now - gLastTime;
+  gLastTime = now;
+  gFPSTimer += dt;
+  gFrameCount++;
+  if(gFPSTimer >= 500) {
+    var fps = Math.round(gFrameCount / gFPSTimer * 1000);
+    document.getElementById('perf').textContent = fps + ' fps';
+    gFPSTimer = 0; gFrameCount = 0;
+  }
+
+  gTime += dt;
+
+  if(gPokeOn) {
+    var elapsed = gTime - gPokeTime;
+    updatePokeAngles(elapsed);
+    if(elapsed > 1200) gPokeOn = false;
+    gDirty = true;
+  } else if(gAnimOn) {
+    updateAnimationAngles(gTime);
+    syncSliders();
+    gDirty = true;
+  }
+
+  if(gDirty) {
+    renderScene();
+    gDirty = false;
+  }
+}
+
+function bindSlider(id, setter) {
+  document.getElementById(id).addEventListener('input', function(e) {
+    setter(parseFloat(e.target.value));
+    gDirty = true;
+  });
+}
+
+bindSlider('rotX',    function(v){ gRotX=v; });
+bindSlider('rotY',    function(v){ gRotY=v; });
+bindSlider('lwUpper', function(v){ gLWUpper=v; });
+bindSlider('lwLower', function(v){ gLWLower=v; });
+bindSlider('lwTip',   function(v){ gLWTip=v; });
+bindSlider('rwUpper', function(v){ gRWUpper=v; });
+bindSlider('rwLower', function(v){ gRWLower=v; });
+bindSlider('rwTip',   function(v){ gRWTip=v; });
+bindSlider('llUpper', function(v){ gLLUpper=v; });
+bindSlider('llLower', function(v){ gLLLower=v; });
+bindSlider('rlUpper', function(v){ gRLUpper=v; });
+bindSlider('rlLower', function(v){ gRLLower=v; });
+bindSlider('tail',    function(v){ gTail=v; });
+bindSlider('headNod', function(v){ gHeadNod=v; });
+
+var btnAnim = document.getElementById('btnAnim');
+btnAnim.addEventListener('click', function() {
+  gAnimOn = !gAnimOn;
+  btnAnim.textContent = gAnimOn ? 'Stop Animation' : 'Start Animation';
+});
+
+document.getElementById('btnPoke').addEventListener('click', function() {
+  gPokeTime = gTime; gPokeOn = true; gDirty = true;
+});
+
+canvas.addEventListener('mousedown', function(e) {
+  if(e.shiftKey) { gPokeTime=gTime; gPokeOn=true; gDirty=true; return; }
+  mouseDown=true; lastMX=e.clientX; lastMY=e.clientY;
+});
+canvas.addEventListener('mouseup', function() { mouseDown=false; });
+canvas.addEventListener('mouseleave', function() { mouseDown=false; });
+canvas.addEventListener('mousemove', function(e) {
+  if(!mouseDown) return;
+  gRotY += (e.clientX - lastMX) * 0.5;
+  gRotX += (e.clientY - lastMY) * 0.5;
+  lastMX=e.clientX; lastMY=e.clientY;
+  gDirty=true;
+});
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
