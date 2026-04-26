@@ -1,52 +1,3 @@
-<!DOCTYPE html>
-<html>
-<head>
-<title>Eagle - WebGL Assignment</title>
-<style>
-  body { background-color: #222; color: white; font-family: Arial, sans-serif; }
-  canvas { display: block; margin: 0 auto; background: #111; }
-  #perf { position: absolute; top: 8px; right: 16px; color: lime; font-size: 14px; background: rgba(0,0,0,0.5); padding: 4px 8px; }
-  #controls { text-align: center; margin: 10px; }
-  label { margin: 0 8px; font-size: 13px; }
-</style>
-</head>
-<body>
-<p style="text-align:center; margin:8px 0;">drag to rotate &nbsp;|&nbsp; shift+click to screech</p>
-<div style="position:relative; display:inline-block; left:50%; transform:translateX(-50%);">
-  <canvas id="c" width="800" height="500"></canvas>
-  <div id="perf">-- fps</div>
-</div>
-
-<div id="controls">
-  <br>
-  Global Rotation X: <input type="range" id="rotX" min="-180" max="180" value="-10">
-  Global Rotation Y: <input type="range" id="rotY" min="-180" max="180" value="20">
-  <br><br>
-
-  Left Wing Upper: <input type="range" id="lwUpper" min="-80" max="80" value="0">
-  Left Wing Lower: <input type="range" id="lwLower" min="-60" max="60" value="0">
-  Left Wing Tip: <input type="range" id="lwTip" min="-60" max="60" value="0">
-  <br>
-  Right Wing Upper: <input type="range" id="rwUpper" min="-80" max="80" value="0">
-  Right Wing Lower: <input type="range" id="rwLower" min="-60" max="60" value="0">
-  Right Wing Tip: <input type="range" id="rwTip" min="-60" max="60" value="0">
-  <br><br>
-
-  Left Leg Upper: <input type="range" id="llUpper" min="-50" max="50" value="0">
-  Left Leg Lower: <input type="range" id="llLower" min="-70" max="10" value="-15">
-  Right Leg Upper: <input type="range" id="rlUpper" min="-50" max="50" value="0">
-  Right Leg Lower: <input type="range" id="rlLower" min="-70" max="10" value="-15">
-  <br><br>
-
-  Tail: <input type="range" id="tail" min="-40" max="40" value="0">
-  Head Nod: <input type="range" id="headNod" min="-30" max="30" value="0">
-  <br><br>
-
-  <button id="btnAnim">Start Animation</button>
-  <button id="btnPoke">Screech!</button>
-</div>
-
-<script>
 var VERT_SRC = `
 attribute vec4 a_Position;
 attribute vec3 a_Normal;
@@ -493,6 +444,3 @@ canvas.addEventListener('mousemove', function(e) {
 });
 
 requestAnimationFrame(tick);
-</script>
-</body>
-</html>
